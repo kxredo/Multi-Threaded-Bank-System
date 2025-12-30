@@ -20,12 +20,33 @@ extern void thread_pool_init(int num_workers);
 extern int submit_task(int client_fd, const char *command);
 extern void thread_pool_shutdown();
 
+// External function from protocol.c (for single-threaded mode)
+extern void execute_command(const char *input, char *response, size_t resp_size);
+
 // External functions from transactions.c
 extern void init_bank();
 
 static int server_fd;
 static int epoll_fd;
-static volatile int running = 1;
+volatile int running = 1;
+
+// Runtime threading mode (set via command-line argument)
+static int single_threaded_mode = 0;  // Default: multi-threaded
+
+// Functions to get/set threading mode (called from protocol.c)
+void server_set_single_threaded(int enabled) {
+    single_threaded_mode = enabled;
+}
+
+int server_get_single_threaded(void) {
+    return single_threaded_mode;
+}
+
+// External hook for protocol to request shutdown
+void server_request_shutdown(void) {
+    running = 0;
+    printf("[Server] Shutdown requested\n");
+}
 
 // Set socket to non-blocking mode
 void set_nonblocking(int fd) {
@@ -137,8 +158,19 @@ void handle_client_data(int client_fd) {
     buffer[n] = '\0';
     printf("[Server] Received from FD %d: %s\n", client_fd, buffer);
     
-    // Submit task to thread pool
-    submit_task(client_fd, buffer);
+    if (single_threaded_mode) {
+        // SINGLE-THREADED: Process request directly in main thread (BLOCKING)
+        // This demonstrates sequential processing - each client waits for others
+        char response[BUFFER_SIZE];
+        printf("[Server-SingleThread] Processing inline...\n");
+        execute_command(buffer, response, sizeof(response));
+        send(client_fd, response, strlen(response), 0);
+        printf("[Server-SingleThread] Done processing FD %d\n", client_fd);
+    } else {
+        // MULTI-THREADED: Submit task to thread pool (NON-BLOCKING)
+        // This demonstrates parallel processing - multiple workers handle requests
+        submit_task(client_fd, buffer);
+    }
 }
 
 // Main reactor loop
@@ -177,15 +209,27 @@ void server_cleanup() {
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
+    
     signal(SIGINT, signal_handler);
     
     // Initialize bank
     init_bank();
     printf("[Server] Bank initialized\n");
     
-    // Initialize thread pool
-    thread_pool_init(10);
-    printf("[Server] Thread pool initialized with 10 workers\n");
+    // Initialize thread pool (multi-threaded by default)
+    if (!single_threaded_mode) {
+        thread_pool_init(10);
+    }
+    
+    printf("\n============================================\n");
+    if (single_threaded_mode) {
+        printf("  RUNNING IN SINGLE-THREADED MODE (SLOW)\n");
+        printf("  All requests processed sequentially\n");
+    } else {
+        printf("  RUNNING IN MULTI-THREADED MODE (FAST)\n");
+        printf("  10 workers processing in parallel\n");
+    }
+    printf("============================================\n\n");
     
     // Initialize server socket
     if (server_init() < 0) {
@@ -203,7 +247,9 @@ int main(int argc, char *argv[]) {
     reactor_loop();
     
     // Shutdown
-    thread_pool_shutdown();
+    if (!single_threaded_mode) {
+        thread_pool_shutdown();
+    }
     server_cleanup();
     
     return 0;

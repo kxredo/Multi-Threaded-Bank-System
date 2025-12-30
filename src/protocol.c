@@ -2,8 +2,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <unistd.h>  // for usleep()
 
 #include "../include/bank.h"
+
+// ============================================================================
+// SIMULATED PROCESSING DELAY - Makes threading difference visible
+// ============================================================================
+// Set to 0 to disable delay, or any value in milliseconds (e.g., 100)
+// This simulates real-world latency: database access, validation, etc.
+#define SIMULATED_DELAY_MS 100
+// ============================================================================
 
 // External declarations
 extern Account *bank[MAX_ACCOUNTS];
@@ -15,8 +24,12 @@ typedef enum {
     CMD_WITHDRAW,
     CMD_TRANSFER,
     CMD_BALANCE,
+    CMD_SHUTDOWN,
     CMD_INVALID,
-    CMD_BALANCE_ALL
+    CMD_BALANCE_ALL,
+    CMD_MODE_SINGLE,
+    CMD_MODE_MULTI,
+    CMD_MODE_STATUS
 } CommandType;
 
 // Parsed command structure
@@ -93,6 +106,18 @@ ParsedCommand parse_command(const char *input) {
     else if (strcmp(cmd_name, "BALANCE_ALL") == 0) {
         cmd.type = CMD_BALANCE_ALL;
     }
+    else if (strcmp(cmd_name, "SHUTDOWN") == 0) {
+        cmd.type = CMD_SHUTDOWN;
+    }
+    else if (strcmp(cmd_name, "MODE_SINGLE") == 0) {
+        cmd.type = CMD_MODE_SINGLE;
+    }
+    else if (strcmp(cmd_name, "MODE_MULTI") == 0) {
+        cmd.type = CMD_MODE_MULTI;
+    }
+    else if (strcmp(cmd_name, "MODE_STATUS") == 0) {
+        cmd.type = CMD_MODE_STATUS;
+    }
     
     return cmd;
 }
@@ -104,8 +129,27 @@ Account* get_account_ptr(int id) {
 }
 
 // Execute command and return response string
+// Forward-declared server shutdown hook
+extern void server_request_shutdown(void);
+
+// External functions to control threading mode
+extern void server_set_single_threaded(int enabled);
+extern int server_get_single_threaded(void);
+
+// Simulate processing delay (database access, validation, etc.)
+static void simulate_processing_delay(void) {
+#if SIMULATED_DELAY_MS > 0
+    usleep(SIMULATED_DELAY_MS * 1000);  // Convert ms to microseconds
+#endif
+}
+
 void execute_command(const char *input, char *response, size_t resp_size) {
     ParsedCommand cmd = parse_command(input);
+    
+    // Simulate real-world processing time for most commands
+    if (cmd.type != CMD_INVALID && cmd.type != CMD_SHUTDOWN) {
+        simulate_processing_delay();
+    }
     
     switch (cmd.type) {
         case CMD_CREATE: {
@@ -176,6 +220,33 @@ void execute_command(const char *input, char *response, size_t resp_size) {
             if (!found) {
                 snprintf(response, resp_size, "No accounts found.\n");
             }
+            break;
+        }
+        
+        case CMD_SHUTDOWN: {
+            server_request_shutdown();
+            snprintf(response, resp_size, "SUCCESS SHUTDOWN\n");
+            break;
+        }
+        
+        case CMD_MODE_SINGLE: {
+            server_set_single_threaded(1);
+            snprintf(response, resp_size, "SUCCESS MODE_SINGLE\n");
+            printf("[Server] Switched to SINGLE-THREADED mode\n");
+            break;
+        }
+        
+        case CMD_MODE_MULTI: {
+            server_set_single_threaded(0);
+            snprintf(response, resp_size, "SUCCESS MODE_MULTI\n");
+            printf("[Server] Switched to MULTI-THREADED mode\n");
+            break;
+        }
+        
+        case CMD_MODE_STATUS: {
+            int is_single = server_get_single_threaded();
+            snprintf(response, resp_size, "SUCCESS MODE_STATUS %s\n", 
+                     is_single ? "SINGLE" : "MULTI");
             break;
         }
         
